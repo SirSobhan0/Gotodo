@@ -18,7 +18,46 @@ import (
 
 const tasksFilename = "tasks.json"
 
-// TaskStatus defines the possible states of a task
+// English UI Strings
+const (
+	title                 = "Go Todo TUI - Time Tracker"
+	newTaskPrompt         = "New Task:"
+	inputPlaceholder      = "Describe your task..."
+	noTasks               = "No tasks yet. Press 'a' to add one!"
+	statusPending         = "⏳ Pending"
+	statusInProgress      = "▶️ In Progress"
+	statusPaused          = "⏸️ Paused"
+	statusCompleted       = "✅ Completed"
+	helpAdd               = "add task"
+	helpDelete            = "delete task"
+	helpToggle            = "start/pause/resume"
+	helpComplete          = "complete task"
+	helpNav               = "nav"
+	helpQuit              = "quit"
+	helpConfirm           = "confirm"
+	helpCancelBack        = "cancel/back"
+	helpScrollUp          = "scroll up"
+	helpScrollDown        = "scroll down"
+	helpConfirmStay       = "confirm (stay)"
+	helpToggleLineNumbers = "toggle line #s" // New help string
+	savingTasks           = "Saving tasks..."
+	bye                   = "Bye!"
+	errorOnExit           = "Error on exit: %v\n"
+	errorPrefix           = "Error: %v"
+	errorSave             = "save error: %w"
+	errorLoad             = "load error: %w"
+	errorMarshal          = "marshal tasks: %w"
+	errorWriteTasks       = "write tasks: %w"
+	errorReadTasksFile    = "read tasks file: %w"
+	errorUnmarshalTasks   = "unmarshal tasks: %w"
+	errorRunningProgram   = "Error running program: %v\n"
+	errorLoadingTasksLog  = "Error loading tasks: %v\n"
+	inputAreaTitle        = "📝 Add New Task"
+	statsPending          = "Pending"
+	statsInProgress       = "In Progress"
+	statsCompleted        = "Completed"
+)
+
 type TaskStatus int
 
 const (
@@ -29,30 +68,42 @@ const (
 )
 
 func (s TaskStatus) String() string {
-	return [...]string{"⏳ Pending", "▶️ In Progress", "⏸️ Paused", "✅ Completed"}[s]
+	switch s {
+	case Pending:
+		return statusPending
+	case InProgress:
+		return statusInProgress
+	case Paused:
+		return statusPaused
+	case Completed:
+		return statusCompleted
+	default:
+		return "Unknown"
+	}
 }
 
-// Task represents a single todo item
 type Task struct {
 	ID            uuid.UUID     `json:"id"`
 	Description   string        `json:"description"`
 	Status        TaskStatus    `json:"status"`
 	TimeSpent     time.Duration `json:"time_spent"`
-	LastStartedAt time.Time     `json:"last_started_at"` // Used to calculate current session duration if InProgress
+	LastStartedAt time.Time     `json:"last_started_at"`
 	CreatedAt     time.Time     `json:"created_at"`
 }
 
-// Model is the main model for our Bubble Tea application
 type model struct {
-	tasks         []Task
-	cursor        int // Index of the selected task
-	input         textinput.Model
-	viewport      viewport.Model
-	width, height int
-	mode          appMode // To switch between viewing tasks and adding a new task
-	helpMsg       string
-	quitting      bool
-	err           error // To display errors, e.g., save/load errors
+	tasks           []Task
+	cursor          int
+	input           textinput.Model
+	viewport        viewport.Model
+	width, height   int
+	mode            appMode
+	helpMsg         string
+	quitting        bool
+	err             error
+	keyMap          KeyMap
+	showLineNumbers bool // New field for toggling line numbers
+	ready           bool // For viewport initialization
 }
 
 type appMode int
@@ -62,224 +113,300 @@ const (
 	modeAddTask
 )
 
-// TickMsg is a message sent on a timer interval for live updates
 type TickMsg time.Time
 
-// KeyMap defines the keybindings for the application
 type KeyMap struct {
-	Add        key.Binding
-	Delete     key.Binding
-	Toggle     key.Binding // Start/Pause/Resume
-	Complete   key.Binding
-	Up         key.Binding
-	Down       key.Binding
-	Quit       key.Binding
-	Enter      key.Binding // To confirm adding a task
-	Esc        key.Binding // To cancel adding a task or quit
-	ScrollUp   key.Binding
-	ScrollDown key.Binding
+	Add, Delete, Toggle, Complete, Up, Down, Quit, Enter, Esc, ScrollUp, ScrollDown, ToggleLineNumbers key.Binding
 }
 
-var DefaultKeyMap = KeyMap{
-	Add: key.NewBinding(
-		key.WithKeys("a"),
-		key.WithHelp("a", "add task"),
-	),
-	Delete: key.NewBinding(
-		key.WithKeys("d"),
-		key.WithHelp("d", "delete task"),
-	),
-	Toggle: key.NewBinding(
-		key.WithKeys("s"),
-		key.WithHelp("s", "start/pause/resume"),
-	),
-	Complete: key.NewBinding(
-		key.WithKeys("c"),
-		key.WithHelp("c", "complete task"),
-	),
-	Up: key.NewBinding(
-		key.WithKeys("up", "k"),
-		key.WithHelp("↑/k", "move up"),
-	),
-	Down: key.NewBinding(
-		key.WithKeys("down", "j"),
-		key.WithHelp("↓/j", "move down"),
-	),
-	Quit: key.NewBinding(
-		key.WithKeys("q", "ctrl+c"),
-		key.WithHelp("q", "quit"),
-	),
-	Enter: key.NewBinding(
-		key.WithKeys("enter"),
-		key.WithHelp("enter", "confirm"),
-	),
-	Esc: key.NewBinding(
-		key.WithKeys("esc"),
-		key.WithHelp("esc", "cancel/back"),
-	),
-	ScrollUp: key.NewBinding(
-		key.WithKeys("pgup"),
-		key.WithHelp("pgup", "scroll up"),
-	),
-	ScrollDown: key.NewBinding(
-		key.WithKeys("pgdown"),
-		key.WithHelp("pgdown", "scroll down"),
-	),
-}
-
-// Styles
 var (
-	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62")).MarginBottom(1)
-	selectedItemStyle = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("229"))
-	normalItemStyle   = lipgloss.NewStyle()
-	helpStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).MarginTop(1)
-	errorStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true) // Red for errors
-	inputPromptStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("79"))             // A nice blue/purple
-	inputStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
-
-	statusPendingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // Yellow
-	statusInProgressStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("40"))  // Green
-	statusPausedStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("208")) // Orange
-	statusCompletedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240")) // Grey (dimmed)
-
-	timeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39")) // A light blue for time
+	appStyle              lipgloss.Style
+	titleStyle            lipgloss.Style
+	statsStyle            lipgloss.Style
+	taskViewportStyle     lipgloss.Style
+	listItemStyle         lipgloss.Style
+	selectedListItemStyle lipgloss.Style
+	statusRenderWidth     int
+	timeRenderWidth       int
+	dateRenderWidth       int
+	lineNumberWidth       int // Width for line numbers
+	statusPendingStyle    lipgloss.Style
+	statusInProgressStyle lipgloss.Style
+	statusPausedStyle     lipgloss.Style
+	statusCompletedStyle  lipgloss.Style
+	descriptionStyle      lipgloss.Style
+	timeTextSyle          lipgloss.Style
+	dateTextSyle          lipgloss.Style
+	lineNumberStyle       lipgloss.Style // Style for line numbers
+	inputAreaStyle        lipgloss.Style
+	inputPromptStyle      lipgloss.Style
+	focusedInputStyle     lipgloss.Style
+	blurredInputStyle     lipgloss.Style
+	helpStyle             lipgloss.Style
+	errorStyle            lipgloss.Style
 )
 
-// initialModel creates the initial state of the application
+const appHorizontalPadding = 2
+const appVerticalPadding = 2
+
+func (m *model) initializeStyles() {
+	appStyle = lipgloss.NewStyle().Padding(1)
+	titleStyle = lipgloss.NewStyle().Bold(true).MarginBottom(1).Align(lipgloss.Center)
+	statsStyle = lipgloss.NewStyle().Padding(0, 1).MarginBottom(1).Bold(true)
+
+	// Viewport style for its container (border, padding)
+	taskViewportStyle = lipgloss.NewStyle().
+		Border(lipgloss.DoubleBorder(), true).
+		Padding(0, 1) // Apply padding to the viewport style itself for content
+
+	listItemStyle = lipgloss.NewStyle().Padding(0, 1) // Padding for content within the line
+	selectedListItemStyle = lipgloss.NewStyle().Reverse(true).Padding(0, 1).Bold(true)
+
+	statusRenderWidth = lipgloss.Width(statusInProgress) + 1
+	timeRenderWidth = lipgloss.Width("[00:00:00]") + 1
+	dateRenderWidth = lipgloss.Width("(Jan 02)") + 1
+	lineNumberWidth = lipgloss.Width("999. ") // Max 3 digits + dot + space
+
+	statusPendingStyle = lipgloss.NewStyle()
+	statusInProgressStyle = lipgloss.NewStyle()
+	statusPausedStyle = lipgloss.NewStyle()
+	statusCompletedStyle = lipgloss.NewStyle()
+
+	descriptionStyle = lipgloss.NewStyle().Align(lipgloss.Left)
+	timeTextSyle = lipgloss.NewStyle()
+	dateTextSyle = lipgloss.NewStyle()
+	lineNumberStyle = lipgloss.NewStyle() // Simple style for line numbers
+
+	inputAreaStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1).MarginBottom(1)
+	inputPromptStyle = lipgloss.NewStyle().PaddingRight(1)
+	focusedInputStyle = lipgloss.NewStyle().Border(lipgloss.ThickBorder(), true).Padding(0, 1)
+	blurredInputStyle = lipgloss.NewStyle().Border(lipgloss.NormalBorder(), true).Padding(0, 1)
+
+	m.input.PromptStyle = lipgloss.NewStyle()
+	m.input.TextStyle = lipgloss.NewStyle()
+	m.input.PlaceholderStyle = lipgloss.NewStyle()
+	m.input.CursorStyle = lipgloss.NewStyle()
+
+	helpStyle = lipgloss.NewStyle().Padding(0, 1).Bold(true)
+	errorStyle = lipgloss.NewStyle().Bold(true).Padding(0, 1).MarginBottom(1).Border(lipgloss.RoundedBorder()).Align(lipgloss.Center)
+
+	m.keyMap = KeyMap{
+		Add:               key.NewBinding(key.WithKeys("a"), key.WithHelp("a", helpAdd)),
+		Delete:            key.NewBinding(key.WithKeys("d"), key.WithHelp("d", helpDelete)),
+		Toggle:            key.NewBinding(key.WithKeys("s"), key.WithHelp("s", helpToggle)),
+		Complete:          key.NewBinding(key.WithKeys("c"), key.WithHelp("c", helpComplete)),
+		Up:                key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", helpNav)),
+		Down:              key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", helpNav)),
+		Quit:              key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", helpQuit)),
+		Enter:             key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", helpConfirm)),
+		Esc:               key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", helpCancelBack)),
+		ScrollUp:          key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", helpScrollUp)),
+		ScrollDown:        key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdown", helpScrollDown)),
+		ToggleLineNumbers: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", helpToggleLineNumbers)),
+	}
+	m.helpMsg = generateHelp(m.keyMap, m.mode)
+	m.input.Placeholder = inputPlaceholder
+}
+
 func initialModel() model {
-	ti := textinput.New()
-	ti.Placeholder = "Enter task description..."
-	ti.Focus() // Focus initially, will be blurred if no tasks or in view mode
-	ti.CharLimit = 156
-	ti.Width = 50 // Initial width, will be adjusted
-
-	vp := viewport.New(80, 20) // Initial size, will be adjusted
-
-	loadedTasks, err := loadTasksFromFile(tasksFilename)
-	if err != nil {
-		// Non-fatal error, just log it or show it in UI. Start with empty tasks.
-		// For this example, we'll store it in the model to display.
-		// In a real app, might log to a file or stderr.
-		fmt.Fprintf(os.Stderr, "Error loading tasks: %v\n", err) // Log to stderr for now
-	}
-
 	m := model{
-		tasks:    loadedTasks,
-		cursor:   0,
-		input:    ti,
-		viewport: vp,
-		mode:     modeViewTasks,
-		helpMsg:  generateHelp(DefaultKeyMap, modeViewTasks),
-	}
-	if err != nil {
-		m.err = fmt.Errorf("load error: %w", err) // Store error to display in UI
-	}
-	if len(m.tasks) > 0 {
-		m.input.Blur() // If tasks exist, start in view mode, so blur input
+		showLineNumbers: false, // Default to not showing line numbers
 	}
 
+	ti := textinput.New()
+	ti.CharLimit = 156
+	ti.Width = 50
+	m.input = ti
+
+	m.initializeStyles()
+
+	vp := viewport.New(80, 20)
+	m.viewport = vp
+	m.viewport.Style = taskViewportStyle // Style for the viewport's container (border, padding)
+	// The viewport will use its default scrollbar when content overflows.
+
+	loadedTasks, loadErr := loadTasksFromFile(tasksFilename)
+	if loadErr != nil && !os.IsNotExist(loadErr) {
+		fmt.Fprintf(os.Stderr, errorLoadingTasksLog, loadErr)
+	}
+	m.tasks = loadedTasks
+	m.err = loadErr
+
+	if len(m.tasks) == 0 && loadErr == nil {
+		m.mode = modeAddTask
+		m.input.Focus()
+	} else {
+		m.mode = modeViewTasks
+		m.input.Blur()
+	}
+	m.helpMsg = generateHelp(m.keyMap, m.mode)
 	return m
 }
 
-// Init is the first command that Bubble Tea runs
 func (m model) Init() tea.Cmd {
 	return tea.Batch(textinput.Blink, doTick())
 }
 
-// doTick creates a command that sends a TickMsg every second
 func doTick() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
-		return TickMsg(t)
-	})
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return TickMsg(t) })
 }
 
-// Update handles messages and updates the model
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		if !m.ready { // Initialize viewport dimensions once on first WindowSizeMsg
+			m.width = msg.Width
+			m.height = msg.Height
 
-		// Calculate height for the viewport, used in modeViewTasks
-		// Title (1) + Help (1) (+ Error (1) if present) = 2 or 3 lines for non-viewport elements in modeViewTasks
-		nonViewportHeight := 2 // Title + Help
-		if m.err != nil {
-			nonViewportHeight++ // Add space for error message
-		}
-		m.viewport.Height = m.height - nonViewportHeight
-		if m.viewport.Height < 1 {
-			m.viewport.Height = 1
-		} // Ensure viewport has at least 1 line
-		m.viewport.Width = msg.Width // Viewport takes full width
+			availableWidth := m.width - appHorizontalPadding
+			currentAvailableHeight := m.height - appVerticalPadding
 
-		// Configure input field width
-		inputPromptWidth := lipgloss.Width(inputPromptStyle.Render("New Task: "))
-		m.input.Width = m.width - inputPromptWidth - 5 // 5 for padding, borders, and a little space
-		if m.input.Width < 20 {
-			m.input.Width = 20
+			titleViewHeight := lipgloss.Height(titleStyle.Render(title))
+			currentAvailableHeight -= titleViewHeight
+
+			statsBarContent := m.renderStatsBar()
+			statsBarHeight := lipgloss.Height(statsStyle.Render(statsBarContent))
+			currentAvailableHeight -= statsBarHeight
+
+			helpViewHeight := lipgloss.Height(helpStyle.Render(m.helpMsg))
+			currentAvailableHeight -= helpViewHeight
+
+			if m.err != nil {
+				errorViewHeight := lipgloss.Height(errorStyle.Render(fmt.Sprintf(errorPrefix, m.err)))
+				currentAvailableHeight -= errorViewHeight
+			}
+
+			// Viewport content width needs to account for its own border and the scrollbar (typically 1 char)
+			m.viewport.Width = max(1, availableWidth-taskViewportStyle.GetHorizontalFrameSize()-1) // -1 for default scrollbar space
+
+			if m.mode == modeAddTask {
+				inputContentForHeight := lipgloss.JoinVertical(lipgloss.Left,
+					lipgloss.NewStyle().Bold(true).Align(lipgloss.Center).Render(inputAreaTitle),
+					lipgloss.JoinHorizontal(lipgloss.Bottom,
+						inputPromptStyle.Render(newTaskPrompt),
+						focusedInputStyle.Width(m.input.Width).Render(" "),
+					),
+				)
+				inputAreaRenderedHeight := lipgloss.Height(inputAreaStyle.Render(inputContentForHeight))
+				currentAvailableHeight -= inputAreaRenderedHeight
+
+				inputPromptRenderedWidth := lipgloss.Width(inputPromptStyle.Render(newTaskPrompt))
+				m.input.Width = max(10, availableWidth-inputAreaStyle.GetHorizontalFrameSize()-inputPromptRenderedWidth-2)
+			} else {
+				m.viewport.Height = max(1, currentAvailableHeight-taskViewportStyle.GetVerticalFrameSize())
+			}
+			m.ready = true
+		} else { // Subsequent resizes
+			m.width = msg.Width
+			m.height = msg.Height
+			// Recalculate based on new size
+			availableWidth := m.width - appHorizontalPadding
+			currentAvailableHeight := m.height - appVerticalPadding
+			titleViewHeight := lipgloss.Height(titleStyle.Render(title))
+			currentAvailableHeight -= titleViewHeight
+			statsBarHeight := lipgloss.Height(statsStyle.Render(m.renderStatsBar()))
+			currentAvailableHeight -= statsBarHeight
+			helpViewHeight := lipgloss.Height(helpStyle.Render(m.helpMsg))
+			currentAvailableHeight -= helpViewHeight
+			if m.err != nil {
+				errorViewHeight := lipgloss.Height(errorStyle.Render(fmt.Sprintf(errorPrefix, m.err)))
+				currentAvailableHeight -= errorViewHeight
+			}
+			m.viewport.Width = max(1, availableWidth-taskViewportStyle.GetHorizontalFrameSize()-1) // -1 for default scrollbar
+			if m.mode == modeAddTask {
+				inputAreaRenderedHeight := lipgloss.Height(inputAreaStyle.Render("dummy")) // Approx
+				currentAvailableHeight -= inputAreaRenderedHeight
+				inputPromptRenderedWidth := lipgloss.Width(inputPromptStyle.Render(newTaskPrompt))
+				m.input.Width = max(10, availableWidth-inputAreaStyle.GetHorizontalFrameSize()-inputPromptRenderedWidth-2)
+			} else {
+				m.viewport.Height = max(1, currentAvailableHeight-taskViewportStyle.GetVerticalFrameSize())
+			}
 		}
-		if m.input.Width > 80 {
-			m.input.Width = 80
-		}
+		// Ensure viewport content is updated after resize
+		m.viewport.SetContent(m.renderTasksView())
 
 	case TickMsg:
-		// This tick is mainly for re-rendering to update live timers.
-		// No actual state change needed here for the timer itself, as View calculates it.
-		cmds = append(cmds, doTick()) // Schedule the next tick
+		cmds = append(cmds, doTick())
 
 	case tea.KeyMsg:
-		m.err = nil // Clear previous error on new key press
+		if m.err != nil && msg.Type != tea.KeyCtrlC && msg.String() != "q" {
+			if !os.IsNotExist(m.err) {
+				m.err = nil
+			}
+		}
+
 		switch m.mode {
 		case modeViewTasks:
 			switch {
-			case key.Matches(msg, DefaultKeyMap.Quit):
+			case key.Matches(msg, m.keyMap.ToggleLineNumbers):
+				m.showLineNumbers = !m.showLineNumbers
+				m.viewport.SetContent(m.renderTasksView()) // Re-render tasks with/without numbers
+			case key.Matches(msg, m.keyMap.Quit):
 				m.quitting = true
-				// Prepare tasks for saving (e.g., finalize InProgress tasks)
-				for i, task := range m.tasks {
-					if task.Status == InProgress {
-						m.tasks[i].TimeSpent += time.Since(task.LastStartedAt)
-						m.tasks[i].Status = Paused // Save as Paused
+				for i := range m.tasks { // Iterate with index to modify original slice elements
+					if m.tasks[i].Status == InProgress {
+						if !m.tasks[i].LastStartedAt.IsZero() { // Defensive check
+							m.tasks[i].TimeSpent += time.Since(m.tasks[i].LastStartedAt)
+						}
+						m.tasks[i].Status = Paused
 					}
 				}
 				if err := saveTasksToFile(tasksFilename, m.tasks); err != nil {
-					m.err = fmt.Errorf("save error: %w", err)
-					// Don't quit immediately on save error, let user see it.
-					// Or, could log and quit. For now, show error and stay.
-					// To quit anyway: return m, tea.Quit
+					m.err = fmt.Errorf(errorSave, err)
 				}
-				return m, tea.Quit // Quit after attempting to save
-			case key.Matches(msg, DefaultKeyMap.Add):
+				return m, tea.Quit
+			case key.Matches(msg, m.keyMap.Add):
 				m.mode = modeAddTask
 				m.input.SetValue("")
 				m.input.Focus()
-				m.helpMsg = generateHelp(DefaultKeyMap, modeAddTask)
+				m.helpMsg = generateHelp(m.keyMap, modeAddTask)
 				return m, textinput.Blink
-			case key.Matches(msg, DefaultKeyMap.Delete):
+			case key.Matches(msg, m.keyMap.Delete):
 				if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
 					m.tasks = append(m.tasks[:m.cursor], m.tasks[m.cursor+1:]...)
-					// Adjust cursor if it's now out of bounds
 					if m.cursor >= len(m.tasks) && len(m.tasks) > 0 {
 						m.cursor = len(m.tasks) - 1
 					} else if len(m.tasks) == 0 {
-						m.cursor = 0 // Or handle empty state specifically
+						m.cursor = 0
+						m.mode = modeAddTask
+						m.input.Focus()
+						m.helpMsg = generateHelp(m.keyMap, modeAddTask)
+						return m, textinput.Blink
 					}
 				}
-			case key.Matches(msg, DefaultKeyMap.Up):
-				if m.cursor > 0 {
-					m.cursor--
-				} else if len(m.tasks) > 0 { // Wrap around to bottom
-					m.cursor = len(m.tasks) - 1
+			case key.Matches(msg, m.keyMap.Up):
+				if len(m.tasks) > 0 {
+					if m.cursor > 0 {
+						m.cursor--
+						if m.cursor < m.viewport.YOffset {
+							m.viewport.SetYOffset(m.cursor)
+						}
+					} else { // Wrap to bottom
+						m.cursor = len(m.tasks) - 1
+						// Ensure the last item is visible, considering viewport height
+						if m.viewport.Height > 0 && len(m.tasks) > m.viewport.Height {
+							m.viewport.SetYOffset(max(0, len(m.tasks)-m.viewport.Height))
+						} else {
+							m.viewport.GotoBottom() // Fallback if calculation is tricky
+						}
+					}
 				}
-			case key.Matches(msg, DefaultKeyMap.Down):
-				if m.cursor < len(m.tasks)-1 {
-					m.cursor++
-				} else if len(m.tasks) > 0 { // Wrap around to top
-					m.cursor = 0
+			case key.Matches(msg, m.keyMap.Down):
+				if len(m.tasks) > 0 {
+					if m.cursor < len(m.tasks)-1 {
+						m.cursor++
+						if m.cursor >= m.viewport.YOffset+m.viewport.Height {
+							m.viewport.SetYOffset(m.cursor - m.viewport.Height + 1)
+						}
+					} else { // Wrap to top
+						m.cursor = 0
+						m.viewport.GotoTop()
+					}
 				}
-			case key.Matches(msg, DefaultKeyMap.Toggle):
+			case key.Matches(msg, m.keyMap.Toggle):
 				if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
 					task := &m.tasks[m.cursor]
 					switch task.Status {
@@ -287,7 +414,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// Stop any other active task first
 						for i := range m.tasks {
 							if m.tasks[i].Status == InProgress && i != m.cursor {
-								m.tasks[i].TimeSpent += time.Since(m.tasks[i].LastStartedAt)
+								if !m.tasks[i].LastStartedAt.IsZero() { // Defensive check
+									m.tasks[i].TimeSpent += time.Since(m.tasks[i].LastStartedAt)
+								}
 								m.tasks[i].Status = Paused
 							}
 						}
@@ -295,45 +424,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						task.LastStartedAt = time.Now()
 					case InProgress:
 						task.Status = Paused
-						task.TimeSpent += time.Since(task.LastStartedAt)
+						if !task.LastStartedAt.IsZero() { // Defensive check
+							task.TimeSpent += time.Since(task.LastStartedAt)
+						}
 					}
 				}
-			case key.Matches(msg, DefaultKeyMap.Complete):
+			case key.Matches(msg, m.keyMap.Complete):
 				if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
 					task := &m.tasks[m.cursor]
 					if task.Status == InProgress {
-						task.TimeSpent += time.Since(task.LastStartedAt)
+						if !task.LastStartedAt.IsZero() { // Defensive check
+							task.TimeSpent += time.Since(task.LastStartedAt)
+						}
 					}
 					task.Status = Completed
 				}
-			case key.Matches(msg, DefaultKeyMap.ScrollUp):
-				m.viewport.LineUp(1)
-			case key.Matches(msg, DefaultKeyMap.ScrollDown):
-				m.viewport.LineDown(1)
 			}
 		case modeAddTask:
 			switch {
-			case key.Matches(msg, DefaultKeyMap.Enter):
+			case key.Matches(msg, m.keyMap.Enter):
 				if strings.TrimSpace(m.input.Value()) != "" {
-					newTask := Task{
-						ID:          uuid.New(),
-						Description: m.input.Value(),
-						Status:      Pending,
-						CreatedAt:   time.Now(),
-					}
+					newTask := Task{ID: uuid.New(), Description: m.input.Value(), Status: Pending, CreatedAt: time.Now()}
 					m.tasks = append(m.tasks, newTask)
-					m.input.SetValue("") // Clear input for next task
+					m.input.SetValue("")
 				}
-				// Stay in add mode to add multiple tasks quickly
-				// To switch back:
-				// m.mode = modeViewTasks
-				// m.input.Blur()
-				// m.helpMsg = generateHelp(DefaultKeyMap, modeViewTasks)
-			case key.Matches(msg, DefaultKeyMap.Esc):
+			case key.Matches(msg, m.keyMap.Esc):
 				m.mode = modeViewTasks
 				m.input.Blur()
 				m.input.SetValue("")
-				m.helpMsg = generateHelp(DefaultKeyMap, modeViewTasks)
+				m.helpMsg = generateHelp(m.keyMap, modeViewTasks)
 			default:
 				m.input, cmd = m.input.Update(msg)
 				cmds = append(cmds, cmd)
@@ -341,12 +460,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Ensure cursor is within bounds
 	if len(m.tasks) > 0 {
 		if m.cursor >= len(m.tasks) {
 			m.cursor = len(m.tasks) - 1
 		}
-		if m.cursor < 0 { // Should not happen with current logic, but defensive
+		if m.cursor < 0 {
 			m.cursor = 0
 		}
 	} else {
@@ -354,108 +472,195 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	m.viewport.SetContent(m.renderTasksView())
-	// m.viewport, cmd = m.viewport.Update(msg) // Viewport consumes its own keys if needed
-	// cmds = append(cmds, cmd)
+	// Pass all messages to viewport for its internal handling (like mouse scrolling)
+	m.viewport, cmd = m.viewport.Update(msg)
+	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
 }
 
-// View renders the UI
-func (m model) View() string {
-	if m.quitting {
-		if m.err != nil { // If quitting with an error (e.g. save failed)
-			return fmt.Sprintf("Error on exit: %v\nBye!\n", m.err)
+func (m model) renderStatsBar() string {
+	pendingCount, inProgressCount, completedCount := 0, 0, 0
+	for _, task := range m.tasks {
+		switch task.Status {
+		case Pending:
+			pendingCount++
+		case InProgress:
+			inProgressCount++
+		case Completed:
+			completedCount++
 		}
-		return "Saving tasks...\nBye!\n"
 	}
-
-	var s strings.Builder
-
-	s.WriteString(titleStyle.Render("Go Todo TUI - Time Tracker") + "\n")
-
-	if m.err != nil {
-		s.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)) + "\n")
-	}
-
-	if m.mode == modeAddTask {
-		s.WriteString(inputPromptStyle.Render("New Task: ") + m.input.View() + "\n\n")
-	} else {
-		s.WriteString(m.viewport.View() + "\n")
-	}
-
-	s.WriteString(helpStyle.Render(m.helpMsg))
-	return s.String()
+	return fmt.Sprintf("%s: %d | %s: %d | %s: %d",
+		statsPending, pendingCount,
+		statsInProgress, inProgressCount,
+		statsCompleted, completedCount,
+	)
 }
 
-// renderTasksView generates the string content for the tasks list viewport
-func (m model) renderTasksView() string {
-	var taskLines []string
-	if len(m.tasks) == 0 {
-		taskLines = append(taskLines, normalItemStyle.Render("No tasks yet. Press 'a' to add one!"))
+func (m model) View() string {
+	if !m.ready {
+		return "\n  Initializing..."
+	}
+	if m.quitting {
+		finalMsg := savingTasks + "\n" + bye + "\n"
+		if m.err != nil && !os.IsNotExist(m.err) {
+			finalMsg = fmt.Sprintf(errorOnExit, m.err) + finalMsg
+		}
+		return appStyle.Render(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, finalMsg))
+	}
+
+	var viewParts []string
+
+	viewParts = append(viewParts, titleStyle.Render(title))
+
+	if m.err != nil && !os.IsNotExist(m.err) {
+		viewParts = append(viewParts, errorStyle.Render(fmt.Sprintf(errorPrefix, m.err)))
+	}
+
+	viewParts = append(viewParts, statsStyle.Width(m.width-appHorizontalPadding).Render(m.renderStatsBar()))
+
+	if m.mode == modeAddTask {
+		inputCurrentStyle := blurredInputStyle
+		if m.input.Focused() {
+			inputCurrentStyle = focusedInputStyle
+		}
+
+		inputFieldRender := inputCurrentStyle.Width(m.input.Width).Render(m.input.View())
+
+		inputFieldContent := lipgloss.JoinHorizontal(lipgloss.Bottom,
+			inputPromptStyle.Render(newTaskPrompt),
+			inputFieldRender,
+		)
+		inputBoxTitle := lipgloss.NewStyle().Bold(true).Align(lipgloss.Center).Render(inputAreaTitle)
+		inputBoxContent := lipgloss.JoinVertical(lipgloss.Top, inputBoxTitle, inputFieldContent)
+
+		viewParts = append(viewParts, inputAreaStyle.Width(m.width-appHorizontalPadding).Render(inputBoxContent))
+
 	} else {
-		// Calculate dynamic width for description based on other elements
-		// Status (emoji + text ~15-20), Time (HH:MM:SS ~8), Spaces, Cursor (2)
-		// Let's estimate other elements take about 30-35 characters.
-		descMaxWidth := m.width - 35
-		if descMaxWidth < 10 {
-			descMaxWidth = 10
-		} // Minimum description width
-
-		for i, task := range m.tasks {
-			description := task.Description
-			if lipgloss.Width(description) > descMaxWidth {
-				// Truncate description carefully, considering rune width
-				runes := []rune(description)
-				currentWidth := 0
-				truncateAt := 0
-				for idx, r := range runes {
-					currentWidth += lipgloss.Width(string(r)) // More accurate for multi-byte chars
-					if currentWidth > descMaxWidth-3 {        // -3 for "..."
-						break
-					}
-					truncateAt = idx + 1
-				}
-				description = string(runes[:truncateAt]) + "..."
-			}
-
-			statusStr := ""
-			switch task.Status {
-			case Pending:
-				statusStr = statusPendingStyle.Render(task.Status.String())
-			case InProgress:
-				statusStr = statusInProgressStyle.Render(task.Status.String())
-			case Paused:
-				statusStr = statusPausedStyle.Render(task.Status.String())
-			case Completed:
-				statusStr = statusCompletedStyle.Render(task.Status.String())
-			}
-
-			timeDisplay := task.TimeSpent
-			if task.Status == InProgress {
-				timeDisplay += time.Since(task.LastStartedAt)
-			}
-
-			formattedTime := formatDuration(timeDisplay)
-
-			// Ensure consistent spacing, e.g. by using fixed width for status or padding
-			// For simplicity, current spacing is by string length.
-			line := fmt.Sprintf("%-18s %s [%s]", statusStr, description, timeStyle.Render(formattedTime))
-
-			if m.cursor == i {
-				taskLines = append(taskLines, selectedItemStyle.Render("❯ "+line))
-			} else {
-				taskLines = append(taskLines, normalItemStyle.Render("  "+line))
-			}
+		if len(m.tasks) == 0 {
+			noTasksRendered := lipgloss.Place(
+				m.viewport.Width, m.viewport.Height,
+				lipgloss.Center, lipgloss.Center,
+				noTasks,
+				lipgloss.WithWhitespaceChars(" "),
+			)
+			viewParts = append(viewParts, taskViewportStyle.Width(m.width-appHorizontalPadding).Height(m.viewport.Height+taskViewportStyle.GetVerticalFrameSize()).Render(noTasksRendered))
+		} else {
+			viewParts = append(viewParts, m.viewport.View())
 		}
 	}
-	// Ensure viewport always has some content to prevent crashes if tasks are empty
+
+	allContentAboveHelp := lipgloss.JoinVertical(lipgloss.Left, viewParts...)
+
+	helpBar := helpStyle.Width(m.width - appHorizontalPadding).Render(m.helpMsg)
+
+	contentHeight := lipgloss.Height(allContentAboveHelp)
+	helpHeight := lipgloss.Height(helpBar)
+	totalContentHeight := contentHeight + helpHeight
+
+	availableInnerHeight := m.height - appVerticalPadding
+	var finalView string
+	if totalContentHeight < availableInnerHeight {
+		spacerHeight := availableInnerHeight - totalContentHeight
+		spacer := lipgloss.NewStyle().Height(spacerHeight).Render("")
+		finalView = lipgloss.JoinVertical(lipgloss.Left, allContentAboveHelp, spacer, helpBar)
+	} else {
+		finalView = lipgloss.JoinVertical(lipgloss.Left, allContentAboveHelp, helpBar)
+	}
+
+	return appStyle.Render(finalView)
+}
+
+func (m model) renderTasksView() string {
+	var taskLines []string
+	contentWidth := m.viewport.Width
+
+	for i, task := range m.tasks {
+		var currentStatusStyle lipgloss.Style
+		switch task.Status {
+		case Pending:
+			currentStatusStyle = statusPendingStyle
+		case InProgress:
+			currentStatusStyle = statusInProgressStyle
+		case Paused:
+			currentStatusStyle = statusPausedStyle
+		case Completed:
+			currentStatusStyle = statusCompletedStyle
+		}
+		statusText := currentStatusStyle.Render(task.Status.String())
+		statusPart := statusText
+
+		timeDisplay := task.TimeSpent
+		if task.Status == InProgress {
+			if !task.LastStartedAt.IsZero() { // Defensive check for display
+				timeDisplay += time.Since(task.LastStartedAt)
+			}
+		}
+		formattedTime := timeTextSyle.Render("[" + formatDuration(timeDisplay) + "]")
+		timePart := lipgloss.NewStyle().Align(lipgloss.Right).Width(timeRenderWidth).Render(formattedTime)
+
+		formattedDate := dateTextSyle.Render("(" + task.CreatedAt.Format("Jan 02") + ")")
+		datePart := formattedDate
+
+		lineNumStr := ""
+		if m.showLineNumbers {
+			lineNumStr = lineNumberStyle.Render(fmt.Sprintf("%3d. ", i+1))
+		}
+
+		indentStr := "  "
+		cursorStr := "❯ "
+		if m.cursor == i {
+			indentStr = cursorStr
+		}
+
+		currentLineNumberWidth := 0
+		if m.showLineNumbers {
+			currentLineNumberWidth = lineNumberWidth
+		}
+		descAvailableWidth := contentWidth - lipgloss.Width(indentStr) - currentLineNumberWidth - lipgloss.Width(statusPart) - lipgloss.Width(datePart) - lipgloss.Width(timePart) - lipgloss.Width("   ") - listItemStyle.GetHorizontalFrameSize()
+		if descAvailableWidth < 5 {
+			descAvailableWidth = 5
+		}
+
+		descText := task.Description
+		if lipgloss.Width(descText) > descAvailableWidth {
+			runes := []rune(descText)
+			truncatedRunes := []rune{}
+			currentW := 0
+			for _, r := range runes {
+				runeW := lipgloss.Width(string(r))
+				if currentW+runeW > descAvailableWidth-lipgloss.Width("...") {
+					break
+				}
+				truncatedRunes = append(truncatedRunes, r)
+				currentW += runeW
+			}
+			descText = string(truncatedRunes) + "..."
+		}
+		descriptionPart := descriptionStyle.Render(descText)
+
+		statusPartRender := lipgloss.NewStyle().Width(statusRenderWidth).Render(statusPart)
+		datePartRender := lipgloss.NewStyle().Width(dateRenderWidth).Render(datePart)
+
+		lineContent := lipgloss.JoinHorizontal(lipgloss.Top, lineNumStr, statusPartRender, " ", datePartRender, " ", descriptionPart, " ", timePart)
+
+		itemStyleToUse := listItemStyle
+		if m.cursor == i {
+			itemStyleToUse = selectedListItemStyle
+		}
+
+		finalLineStyle := itemStyleToUse.Copy().Width(contentWidth)
+		renderedLine := finalLineStyle.Render(indentStr + lineContent)
+		taskLines = append(taskLines, renderedLine)
+	}
+
 	if len(taskLines) == 0 {
-		taskLines = append(taskLines, " ") // Add a blank line if no tasks and no message
+		return " "
 	}
 	return strings.Join(taskLines, "\n")
 }
 
-// formatDuration formats time.Duration into HH:MM:SS
 func formatDuration(d time.Duration) string {
 	d = d.Round(time.Second)
 	h := d / time.Hour
@@ -466,69 +671,68 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
 }
 
-// generateHelp generates the help string based on current mode
 func generateHelp(km KeyMap, mode appMode) string {
 	var parts []string
 	if mode == modeViewTasks {
-		parts = append(parts, km.Add.Help().Key+" "+km.Add.Help().Desc)
-		parts = append(parts, km.Delete.Help().Key+" "+km.Delete.Help().Desc)
-		parts = append(parts, km.Up.Help().Key+" "+km.Up.Help().Desc)
-		parts = append(parts, km.Down.Help().Key+" "+km.Down.Help().Desc)
-		parts = append(parts, km.Toggle.Help().Key+" "+km.Toggle.Help().Desc)
-		parts = append(parts, km.Complete.Help().Key+" "+km.Complete.Help().Desc)
-		parts = append(parts, km.ScrollUp.Help().Key+" "+km.ScrollUp.Help().Desc)
-		parts = append(parts, km.ScrollDown.Help().Key+" "+km.ScrollDown.Help().Desc)
-		parts = append(parts, km.Quit.Help().Key+" "+km.Quit.Help().Desc)
+		parts = []string{
+			km.Add.Help().Key + " " + km.Add.Help().Desc,
+			km.Delete.Help().Key + " " + km.Delete.Help().Desc,
+			km.Up.Help().Key + "/" + km.Down.Help().Key + " " + helpNav,
+			km.Toggle.Help().Key + " " + km.Toggle.Help().Desc,
+			km.Complete.Help().Key + " " + km.Complete.Help().Desc,
+			km.ToggleLineNumbers.Help().Key + " " + km.ToggleLineNumbers.Help().Desc,
+			km.Quit.Help().Key + " " + km.Quit.Help().Desc,
+		}
 	} else { // modeAddTask
-		parts = append(parts, km.Enter.Help().Key+" "+km.Enter.Help().Desc+" (stay to add more)")
-		parts = append(parts, km.Esc.Help().Key+" "+km.Esc.Help().Desc)
+		parts = []string{
+			km.Enter.Help().Key + " " + helpConfirmStay,
+			km.Esc.Help().Key + " " + km.Esc.Help().Desc,
+		}
 	}
-	return strings.Join(parts, " | ")
+	return strings.Join(parts, " │ ")
 }
 
-// saveTasksToFile saves tasks to a JSON file
 func saveTasksToFile(filename string, tasks []Task) error {
 	data, err := json.MarshalIndent(tasks, "", "  ")
 	if err != nil {
-		return fmt.Errorf("could not marshal tasks: %w", err)
+		return fmt.Errorf(errorMarshal, err)
 	}
-	err = ioutil.WriteFile(filename, data, 0644) // Read/Write for user, Read for others
+	err = ioutil.WriteFile(filename, data, 0644)
 	if err != nil {
-		return fmt.Errorf("could not write tasks to file: %w", err)
+		return fmt.Errorf(errorWriteTasks, err)
 	}
 	return nil
 }
 
-// loadTasksFromFile loads tasks from a JSON file
 func loadTasksFromFile(filename string) ([]Task, error) {
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []Task{}, nil // File doesn't exist, return empty slice, no error
+			return []Task{}, err
 		}
-		return nil, fmt.Errorf("could not read tasks file: %w", err)
+		return nil, fmt.Errorf(errorReadTasksFile, err)
 	}
-
 	var tasks []Task
 	err = json.Unmarshal(data, &tasks)
 	if err != nil {
-		return nil, fmt.Errorf("could not unmarshal tasks data: %w", err)
+		return nil, fmt.Errorf(errorUnmarshalTasks, err)
 	}
 	return tasks, nil
 }
 
-func main() {
-	// If a log file is preferred for debugging Bubble Tea:
-	// f, err := tea.LogToFile("debug.log", "debug")
-	// if err != nil {
-	// 	fmt.Println("fatal:", err)
-	// 	os.Exit(1)
-	// }
-	// defer f.Close()
+// Helper for max(int, int)
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
 
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		fmt.Printf("Alas, there's been an error: %v\n", err)
+func main() {
+	// tea.LogToFile("debug.log", "debug")
+	program := tea.NewProgram(initialModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	if _, err := program.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, errorRunningProgram, err)
 		os.Exit(1)
 	}
 }
