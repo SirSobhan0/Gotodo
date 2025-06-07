@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
+	"github.com/jalaali/go-jalaali"
 )
 
 const tasksFilename = "tasks.json"
@@ -39,7 +40,8 @@ const (
 	helpScrollUp          = "scroll up"
 	helpScrollDown        = "scroll down"
 	helpConfirmStay       = "confirm (stay)"
-	helpToggleLineNumbers = "toggle line #s" // New help string
+	helpToggleLineNumbers = "toggle line #s"
+	helpToggleCalendar    = "toggle calendar (G/J)"
 	savingTasks           = "Saving tasks..."
 	bye                   = "Bye!"
 	errorOnExit           = "Error on exit: %v\n"
@@ -56,6 +58,8 @@ const (
 	statsPending          = "Pending"
 	statsInProgress       = "In Progress"
 	statsCompleted        = "Completed"
+	calendarGregorian     = "Gregorian (MM/DD)"
+	calendarJalali        = "Jalali (MM/DD)"
 )
 
 type TaskStatus int
@@ -92,18 +96,19 @@ type Task struct {
 }
 
 type model struct {
-	tasks           []Task
-	cursor          int
-	input           textinput.Model
-	viewport        viewport.Model
-	width, height   int
-	mode            appMode
-	helpMsg         string
-	quitting        bool
-	err             error
-	keyMap          KeyMap
-	showLineNumbers bool // New field for toggling line numbers
-	ready           bool // For viewport initialization
+	tasks             []Task
+	cursor            int
+	input             textinput.Model
+	viewport          viewport.Model
+	width, height     int
+	mode              appMode
+	helpMsg           string
+	quitting          bool
+	err               error
+	keyMap            KeyMap
+	showLineNumbers   bool
+	ready             bool
+	useJalaliCalendar bool
 }
 
 type appMode int
@@ -116,34 +121,35 @@ const (
 type TickMsg time.Time
 
 type KeyMap struct {
-	Add, Delete, Toggle, Complete, Up, Down, Quit, Enter, Esc, ScrollUp, ScrollDown, ToggleLineNumbers key.Binding
+	Add, Delete, Toggle, Complete, Up, Down, Quit, Enter, Esc, ScrollUp, ScrollDown, ToggleLineNumbers, ToggleCalendar key.Binding
 }
 
 var (
-	appStyle              lipgloss.Style
-	titleStyle            lipgloss.Style
-	statsStyle            lipgloss.Style
-	taskViewportStyle     lipgloss.Style
-	listItemStyle         lipgloss.Style
-	selectedListItemStyle lipgloss.Style
-	statusRenderWidth     int
-	timeRenderWidth       int
-	dateRenderWidth       int
-	lineNumberWidth       int // Width for line numbers
-	statusPendingStyle    lipgloss.Style
-	statusInProgressStyle lipgloss.Style
-	statusPausedStyle     lipgloss.Style
-	statusCompletedStyle  lipgloss.Style
-	descriptionStyle      lipgloss.Style
-	timeTextSyle          lipgloss.Style
-	dateTextSyle          lipgloss.Style
-	lineNumberStyle       lipgloss.Style // Style for line numbers
-	inputAreaStyle        lipgloss.Style
-	inputPromptStyle      lipgloss.Style
-	focusedInputStyle     lipgloss.Style
-	blurredInputStyle     lipgloss.Style
-	helpStyle             lipgloss.Style
-	errorStyle            lipgloss.Style
+	appStyle               lipgloss.Style
+	titleStyle             lipgloss.Style
+	statsStyle             lipgloss.Style
+	calendarIndicatorStyle lipgloss.Style
+	taskViewportStyle      lipgloss.Style
+	listItemStyle          lipgloss.Style
+	selectedListItemStyle  lipgloss.Style
+	statusRenderWidth      int
+	timeRenderWidth        int
+	dateRenderWidth        int
+	lineNumberWidth        int
+	statusPendingStyle     lipgloss.Style
+	statusInProgressStyle  lipgloss.Style
+	statusPausedStyle      lipgloss.Style
+	statusCompletedStyle   lipgloss.Style
+	descriptionStyle       lipgloss.Style
+	timeTextSyle           lipgloss.Style
+	dateTextSyle           lipgloss.Style
+	lineNumberStyle        lipgloss.Style
+	inputAreaStyle         lipgloss.Style
+	inputPromptStyle       lipgloss.Style
+	focusedInputStyle      lipgloss.Style
+	blurredInputStyle      lipgloss.Style
+	helpStyle              lipgloss.Style
+	errorStyle             lipgloss.Style
 )
 
 const appHorizontalPadding = 2
@@ -153,19 +159,18 @@ func (m *model) initializeStyles() {
 	appStyle = lipgloss.NewStyle().Padding(1)
 	titleStyle = lipgloss.NewStyle().Bold(true).MarginBottom(1).Align(lipgloss.Center)
 	statsStyle = lipgloss.NewStyle().Padding(0, 1).MarginBottom(1).Bold(true)
+	calendarIndicatorStyle = lipgloss.NewStyle().Padding(0, 1).MarginBottom(1).Italic(true)
 
-	// Viewport style for its container (border, padding)
 	taskViewportStyle = lipgloss.NewStyle().
-		Border(lipgloss.DoubleBorder(), true).
-		Padding(0, 1) // Apply padding to the viewport style itself for content
+		Border(lipgloss.DoubleBorder(), true)
 
-	listItemStyle = lipgloss.NewStyle().Padding(0, 1) // Padding for content within the line
-	selectedListItemStyle = lipgloss.NewStyle().Reverse(true).Padding(0, 1).Bold(true)
+	listItemStyle = lipgloss.NewStyle().Padding(0, 1)
+	selectedListItemStyle = lipgloss.NewStyle().Reverse(true).Padding(0, 1)
 
 	statusRenderWidth = lipgloss.Width(statusInProgress) + 1
 	timeRenderWidth = lipgloss.Width("[00:00:00]") + 1
-	dateRenderWidth = lipgloss.Width("(Jan 02)") + 1
-	lineNumberWidth = lipgloss.Width("999. ") // Max 3 digits + dot + space
+	dateRenderWidth = lipgloss.Width("(00/00)") + 1
+	lineNumberWidth = lipgloss.Width("999. ")
 
 	statusPendingStyle = lipgloss.NewStyle()
 	statusInProgressStyle = lipgloss.NewStyle()
@@ -175,7 +180,7 @@ func (m *model) initializeStyles() {
 	descriptionStyle = lipgloss.NewStyle().Align(lipgloss.Left)
 	timeTextSyle = lipgloss.NewStyle()
 	dateTextSyle = lipgloss.NewStyle()
-	lineNumberStyle = lipgloss.NewStyle() // Simple style for line numbers
+	lineNumberStyle = lipgloss.NewStyle()
 
 	inputAreaStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1).MarginBottom(1)
 	inputPromptStyle = lipgloss.NewStyle().PaddingRight(1)
@@ -195,14 +200,15 @@ func (m *model) initializeStyles() {
 		Delete:            key.NewBinding(key.WithKeys("d"), key.WithHelp("d", helpDelete)),
 		Toggle:            key.NewBinding(key.WithKeys("s"), key.WithHelp("s", helpToggle)),
 		Complete:          key.NewBinding(key.WithKeys("c"), key.WithHelp("c", helpComplete)),
-		Up:                key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", helpNav)),
-		Down:              key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", helpNav)),
+		Up:                key.NewBinding(key.WithKeys("up"), key.WithHelp("↑", helpNav)),
+		Down:              key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", helpNav)),
 		Quit:              key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", helpQuit)),
 		Enter:             key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", helpConfirm)),
 		Esc:               key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", helpCancelBack)),
 		ScrollUp:          key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", helpScrollUp)),
 		ScrollDown:        key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdown", helpScrollDown)),
 		ToggleLineNumbers: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", helpToggleLineNumbers)),
+		ToggleCalendar:    key.NewBinding(key.WithKeys("j"), key.WithHelp("j", helpToggleCalendar)),
 	}
 	m.helpMsg = generateHelp(m.keyMap, m.mode)
 	m.input.Placeholder = inputPlaceholder
@@ -210,7 +216,8 @@ func (m *model) initializeStyles() {
 
 func initialModel() model {
 	m := model{
-		showLineNumbers: false, // Default to not showing line numbers
+		showLineNumbers:   false,
+		useJalaliCalendar: false,
 	}
 
 	ti := textinput.New()
@@ -222,8 +229,7 @@ func initialModel() model {
 
 	vp := viewport.New(80, 20)
 	m.viewport = vp
-	m.viewport.Style = taskViewportStyle // Style for the viewport's container (border, padding)
-	// The viewport will use its default scrollbar when content overflows.
+	m.viewport.Style = taskViewportStyle
 
 	loadedTasks, loadErr := loadTasksFromFile(tasksFilename)
 	if loadErr != nil && !os.IsNotExist(loadErr) {
@@ -251,85 +257,81 @@ func doTick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return TickMsg(t) })
 }
 
+func (m *model) ensureCursorVisible() {
+	if len(m.tasks) == 0 {
+		return
+	}
+	cursorLine := m.cursor
+	if cursorLine < m.viewport.YOffset {
+		m.viewport.SetYOffset(cursorLine)
+	} else if cursorLine >= m.viewport.YOffset+m.viewport.Height {
+		m.viewport.SetYOffset(cursorLine - m.viewport.Height + 1)
+	}
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		if !m.ready { // Initialize viewport dimensions once on first WindowSizeMsg
+		if !m.ready {
 			m.width = msg.Width
 			m.height = msg.Height
-
-			availableWidth := m.width - appHorizontalPadding
-			currentAvailableHeight := m.height - appVerticalPadding
-
-			titleViewHeight := lipgloss.Height(titleStyle.Render(title))
-			currentAvailableHeight -= titleViewHeight
-
-			statsBarContent := m.renderStatsBar()
-			statsBarHeight := lipgloss.Height(statsStyle.Render(statsBarContent))
-			currentAvailableHeight -= statsBarHeight
-
-			helpViewHeight := lipgloss.Height(helpStyle.Render(m.helpMsg))
-			currentAvailableHeight -= helpViewHeight
-
-			if m.err != nil {
-				errorViewHeight := lipgloss.Height(errorStyle.Render(fmt.Sprintf(errorPrefix, m.err)))
-				currentAvailableHeight -= errorViewHeight
-			}
-
-			// Viewport content width needs to account for its own border and the scrollbar (typically 1 char)
-			m.viewport.Width = max(1, availableWidth-taskViewportStyle.GetHorizontalFrameSize()-1) // -1 for default scrollbar space
-
-			if m.mode == modeAddTask {
-				inputContentForHeight := lipgloss.JoinVertical(lipgloss.Left,
-					lipgloss.NewStyle().Bold(true).Align(lipgloss.Center).Render(inputAreaTitle),
-					lipgloss.JoinHorizontal(lipgloss.Bottom,
-						inputPromptStyle.Render(newTaskPrompt),
-						focusedInputStyle.Width(m.input.Width).Render(" "),
-					),
-				)
-				inputAreaRenderedHeight := lipgloss.Height(inputAreaStyle.Render(inputContentForHeight))
-				currentAvailableHeight -= inputAreaRenderedHeight
-
-				inputPromptRenderedWidth := lipgloss.Width(inputPromptStyle.Render(newTaskPrompt))
-				m.input.Width = max(10, availableWidth-inputAreaStyle.GetHorizontalFrameSize()-inputPromptRenderedWidth-2)
-			} else {
-				m.viewport.Height = max(1, currentAvailableHeight-taskViewportStyle.GetVerticalFrameSize())
-			}
 			m.ready = true
-		} else { // Subsequent resizes
+		} else {
 			m.width = msg.Width
 			m.height = msg.Height
-			// Recalculate based on new size
-			availableWidth := m.width - appHorizontalPadding
-			currentAvailableHeight := m.height - appVerticalPadding
-			titleViewHeight := lipgloss.Height(titleStyle.Render(title))
-			currentAvailableHeight -= titleViewHeight
-			statsBarHeight := lipgloss.Height(statsStyle.Render(m.renderStatsBar()))
-			currentAvailableHeight -= statsBarHeight
-			helpViewHeight := lipgloss.Height(helpStyle.Render(m.helpMsg))
-			currentAvailableHeight -= helpViewHeight
-			if m.err != nil {
-				errorViewHeight := lipgloss.Height(errorStyle.Render(fmt.Sprintf(errorPrefix, m.err)))
-				currentAvailableHeight -= errorViewHeight
-			}
-			m.viewport.Width = max(1, availableWidth-taskViewportStyle.GetHorizontalFrameSize()-1) // -1 for default scrollbar
-			if m.mode == modeAddTask {
-				inputAreaRenderedHeight := lipgloss.Height(inputAreaStyle.Render("dummy")) // Approx
-				currentAvailableHeight -= inputAreaRenderedHeight
-				inputPromptRenderedWidth := lipgloss.Width(inputPromptStyle.Render(newTaskPrompt))
-				m.input.Width = max(10, availableWidth-inputAreaStyle.GetHorizontalFrameSize()-inputPromptRenderedWidth-2)
-			} else {
-				m.viewport.Height = max(1, currentAvailableHeight-taskViewportStyle.GetVerticalFrameSize())
-			}
 		}
-		// Ensure viewport content is updated after resize
+
+		availableWidth := m.width - appHorizontalPadding
+		currentAvailableHeight := m.height - appVerticalPadding
+
+		titleViewHeight := lipgloss.Height(titleStyle.Render(title))
+		currentAvailableHeight -= titleViewHeight
+
+		statsBarContent := m.renderStatsBar()
+		statsBarHeight := lipgloss.Height(statsStyle.Render(statsBarContent))
+		currentAvailableHeight -= statsBarHeight
+
+		calendarIndicatorText := calendarGregorian
+		if m.useJalaliCalendar {
+			calendarIndicatorText = calendarJalali
+		}
+		calendarIndicatorHeight := lipgloss.Height(calendarIndicatorStyle.Render(calendarIndicatorText))
+		currentAvailableHeight -= calendarIndicatorHeight
+
+		helpViewHeight := lipgloss.Height(helpStyle.Render(m.helpMsg))
+		currentAvailableHeight -= helpViewHeight
+
+		if m.err != nil {
+			errorViewHeight := lipgloss.Height(errorStyle.Render(fmt.Sprintf(errorPrefix, m.err)))
+			currentAvailableHeight -= errorViewHeight
+		}
+
+		m.viewport.Width = max(1, availableWidth-taskViewportStyle.GetHorizontalFrameSize())
+
+		if m.mode == modeAddTask {
+			inputContentForHeight := lipgloss.JoinVertical(lipgloss.Left,
+				lipgloss.NewStyle().Bold(true).Align(lipgloss.Center).Render(inputAreaTitle),
+				lipgloss.JoinHorizontal(lipgloss.Bottom,
+					inputPromptStyle.Render(newTaskPrompt),
+					focusedInputStyle.Width(m.input.Width).Render(" "),
+				),
+			)
+			inputAreaRenderedHeight := lipgloss.Height(inputAreaStyle.Render(inputContentForHeight))
+			currentAvailableHeight -= inputAreaRenderedHeight
+
+			inputPromptRenderedWidth := lipgloss.Width(inputPromptStyle.Render(newTaskPrompt))
+			m.input.Width = max(10, availableWidth-inputAreaStyle.GetHorizontalFrameSize()-inputPromptRenderedWidth-2)
+		} else {
+			m.viewport.Height = max(1, currentAvailableHeight-taskViewportStyle.GetVerticalFrameSize())
+		}
 		m.viewport.SetContent(m.renderTasksView())
 
 	case TickMsg:
-		cmds = append(cmds, doTick())
+		// This message will cause Bubble Tea to call View(), which handles the re-render.
+		return m, doTick()
 
 	case tea.KeyMsg:
 		if m.err != nil && msg.Type != tea.KeyCtrlC && msg.String() != "q" {
@@ -343,12 +345,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch {
 			case key.Matches(msg, m.keyMap.ToggleLineNumbers):
 				m.showLineNumbers = !m.showLineNumbers
-				m.viewport.SetContent(m.renderTasksView()) // Re-render tasks with/without numbers
+				m.viewport.SetContent(m.renderTasksView()) // Explicitly re-render
+			case key.Matches(msg, m.keyMap.ToggleCalendar):
+				m.useJalaliCalendar = !m.useJalaliCalendar
+				m.viewport.SetContent(m.renderTasksView()) // Explicitly re-render
 			case key.Matches(msg, m.keyMap.Quit):
 				m.quitting = true
-				for i := range m.tasks { // Iterate with index to modify original slice elements
+				for i := range m.tasks {
 					if m.tasks[i].Status == InProgress {
-						if !m.tasks[i].LastStartedAt.IsZero() { // Defensive check
+						if !m.tasks[i].LastStartedAt.IsZero() {
 							m.tasks[i].TimeSpent += time.Since(m.tasks[i].LastStartedAt)
 						}
 						m.tasks[i].Status = Paused
@@ -381,29 +386,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.tasks) > 0 {
 					if m.cursor > 0 {
 						m.cursor--
-						if m.cursor < m.viewport.YOffset {
-							m.viewport.SetYOffset(m.cursor)
-						}
-					} else { // Wrap to bottom
-						m.cursor = len(m.tasks) - 1
-						// Ensure the last item is visible, considering viewport height
-						if m.viewport.Height > 0 && len(m.tasks) > m.viewport.Height {
-							m.viewport.SetYOffset(max(0, len(m.tasks)-m.viewport.Height))
-						} else {
-							m.viewport.GotoBottom() // Fallback if calculation is tricky
-						}
+						m.ensureCursorVisible()
 					}
 				}
 			case key.Matches(msg, m.keyMap.Down):
 				if len(m.tasks) > 0 {
 					if m.cursor < len(m.tasks)-1 {
 						m.cursor++
-						if m.cursor >= m.viewport.YOffset+m.viewport.Height {
-							m.viewport.SetYOffset(m.cursor - m.viewport.Height + 1)
-						}
-					} else { // Wrap to top
-						m.cursor = 0
-						m.viewport.GotoTop()
+						m.ensureCursorVisible()
 					}
 				}
 			case key.Matches(msg, m.keyMap.Toggle):
@@ -411,10 +401,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					task := &m.tasks[m.cursor]
 					switch task.Status {
 					case Pending, Paused:
-						// Stop any other active task first
 						for i := range m.tasks {
 							if m.tasks[i].Status == InProgress && i != m.cursor {
-								if !m.tasks[i].LastStartedAt.IsZero() { // Defensive check
+								if !m.tasks[i].LastStartedAt.IsZero() {
 									m.tasks[i].TimeSpent += time.Since(m.tasks[i].LastStartedAt)
 								}
 								m.tasks[i].Status = Paused
@@ -424,20 +413,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						task.LastStartedAt = time.Now()
 					case InProgress:
 						task.Status = Paused
-						if !task.LastStartedAt.IsZero() { // Defensive check
+						if !task.LastStartedAt.IsZero() {
 							task.TimeSpent += time.Since(task.LastStartedAt)
 						}
 					}
 				}
 			case key.Matches(msg, m.keyMap.Complete):
 				if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
-					task := &m.tasks[m.cursor]
-					if task.Status == InProgress {
-						if !task.LastStartedAt.IsZero() { // Defensive check
-							task.TimeSpent += time.Since(task.LastStartedAt)
+					if m.tasks[m.cursor].Status == InProgress {
+						if !m.tasks[m.cursor].LastStartedAt.IsZero() {
+							m.tasks[m.cursor].TimeSpent += time.Since(m.tasks[m.cursor].LastStartedAt)
 						}
 					}
-					task.Status = Completed
+					m.tasks[m.cursor].Status = Completed
 				}
 			}
 		case modeAddTask:
@@ -445,8 +433,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keyMap.Enter):
 				if strings.TrimSpace(m.input.Value()) != "" {
 					newTask := Task{ID: uuid.New(), Description: m.input.Value(), Status: Pending, CreatedAt: time.Now()}
-					m.tasks = append(m.tasks, newTask)
+					m.tasks = append([]Task{newTask}, m.tasks...) // Prepend to add to top
 					m.input.SetValue("")
+					m.cursor = 0 // Set cursor to the new task
 				}
 			case key.Matches(msg, m.keyMap.Esc):
 				m.mode = modeViewTasks
@@ -471,8 +460,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 	}
 
+	// Always update viewport content after a state change that affects it.
 	m.viewport.SetContent(m.renderTasksView())
-	// Pass all messages to viewport for its internal handling (like mouse scrolling)
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 
@@ -519,6 +508,12 @@ func (m model) View() string {
 	}
 
 	viewParts = append(viewParts, statsStyle.Width(m.width-appHorizontalPadding).Render(m.renderStatsBar()))
+
+	calendarIndicatorText := "Calendar: " + calendarGregorian
+	if m.useJalaliCalendar {
+		calendarIndicatorText = "Calendar: " + calendarJalali
+	}
+	viewParts = append(viewParts, calendarIndicatorStyle.Width(m.width-appHorizontalPadding).Render(calendarIndicatorText))
 
 	if m.mode == modeAddTask {
 		inputCurrentStyle := blurredInputStyle
@@ -572,7 +567,7 @@ func (m model) View() string {
 	return appStyle.Render(finalView)
 }
 
-func (m model) renderTasksView() string {
+func (m *model) renderTasksView() string {
 	var taskLines []string
 	contentWidth := m.viewport.Width
 
@@ -593,14 +588,22 @@ func (m model) renderTasksView() string {
 
 		timeDisplay := task.TimeSpent
 		if task.Status == InProgress {
-			if !task.LastStartedAt.IsZero() { // Defensive check for display
+			if !task.LastStartedAt.IsZero() {
 				timeDisplay += time.Since(task.LastStartedAt)
 			}
 		}
 		formattedTime := timeTextSyle.Render("[" + formatDuration(timeDisplay) + "]")
 		timePart := lipgloss.NewStyle().Align(lipgloss.Right).Width(timeRenderWidth).Render(formattedTime)
 
-		formattedDate := dateTextSyle.Render("(" + task.CreatedAt.Format("Jan 02") + ")")
+		var formattedDate string
+		if m.useJalaliCalendar {
+			utcTime := task.CreatedAt.In(time.UTC)
+			gy, gm, gd := utcTime.Date()
+			_, jm, jd, _ := jalaali.ToJalaali(gy, gm, gd)
+			formattedDate = dateTextSyle.Render(fmt.Sprintf("(%02d/%02d)", jm, jd))
+		} else {
+			formattedDate = dateTextSyle.Render(fmt.Sprintf("(%02d/%02d)", task.CreatedAt.Month(), task.CreatedAt.Day()))
+		}
 		datePart := formattedDate
 
 		lineNumStr := ""
@@ -618,7 +621,7 @@ func (m model) renderTasksView() string {
 		if m.showLineNumbers {
 			currentLineNumberWidth = lineNumberWidth
 		}
-		descAvailableWidth := contentWidth - lipgloss.Width(indentStr) - currentLineNumberWidth - lipgloss.Width(statusPart) - lipgloss.Width(datePart) - lipgloss.Width(timePart) - lipgloss.Width("   ") - listItemStyle.GetHorizontalFrameSize()
+		descAvailableWidth := contentWidth - lipgloss.Width(indentStr) - currentLineNumberWidth - statusRenderWidth - dateRenderWidth - timeRenderWidth - lipgloss.Width("   ")
 		if descAvailableWidth < 5 {
 			descAvailableWidth = 5
 		}
@@ -641,16 +644,16 @@ func (m model) renderTasksView() string {
 		descriptionPart := descriptionStyle.Render(descText)
 
 		statusPartRender := lipgloss.NewStyle().Width(statusRenderWidth).Render(statusPart)
-		datePartRender := lipgloss.NewStyle().Width(dateRenderWidth).Render(datePart)
+		datePartRender := lipgloss.NewStyle().Width(dateRenderWidth).Align(lipgloss.Left).Render(datePart)
 
 		lineContent := lipgloss.JoinHorizontal(lipgloss.Top, lineNumStr, statusPartRender, " ", datePartRender, " ", descriptionPart, " ", timePart)
 
-		itemStyleToUse := listItemStyle
+		itemStyleToUse := listItemStyle.Copy()
 		if m.cursor == i {
-			itemStyleToUse = selectedListItemStyle
+			itemStyleToUse = selectedListItemStyle.Copy()
 		}
 
-		finalLineStyle := itemStyleToUse.Copy().Width(contentWidth)
+		finalLineStyle := itemStyleToUse.Width(contentWidth)
 		renderedLine := finalLineStyle.Render(indentStr + lineContent)
 		taskLines = append(taskLines, renderedLine)
 	}
@@ -681,6 +684,7 @@ func generateHelp(km KeyMap, mode appMode) string {
 			km.Toggle.Help().Key + " " + km.Toggle.Help().Desc,
 			km.Complete.Help().Key + " " + km.Complete.Help().Desc,
 			km.ToggleLineNumbers.Help().Key + " " + km.ToggleLineNumbers.Help().Desc,
+			km.ToggleCalendar.Help().Key + " " + km.ToggleCalendar.Help().Desc,
 			km.Quit.Help().Key + " " + km.Quit.Help().Desc,
 		}
 	} else { // modeAddTask
