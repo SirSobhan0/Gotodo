@@ -1,0 +1,62 @@
+name: Build and Release Go App (Cross-platform)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        os: [linux, windows, darwin]
+        arch: [amd64]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build binary
+        run: |
+          mkdir -p build
+          EXT=""
+          if [[ "${{ matrix.os }}" == "windows" ]]; then EXT=".exe"; fi
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o build/Gotodo-${{ matrix.os }}-${{ matrix.arch }}${EXT} main.go
+
+      - name: Zip binary
+        run: |
+          cd build
+          ZIP_NAME=Gotodo-${{ matrix.os }}-${{ matrix.arch }}.zip
+          zip -j $ZIP_NAME Gotodo-${{ matrix.os }}-${{ matrix.arch }}*
+        shell: bash
+
+      - name: Upload artifact for release
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}-binary
+          path: build/Gotodo-${{ matrix.os }}-${{ matrix.arch }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: ./artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
