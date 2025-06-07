@@ -1,4 +1,4 @@
-name: Build and Release Go App (Cross-platform)
+name: Build and Release Gotodo
 
 on:
   push:
@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     strategy:
       matrix:
         os: [linux, windows, darwin]
@@ -16,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -30,33 +29,36 @@ jobs:
           if [[ "${{ matrix.os }}" == "windows" ]]; then EXT=".exe"; fi
           GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o build/Gotodo-${{ matrix.os }}-${{ matrix.arch }}${EXT} main.go
 
-      - name: Zip binary
+      - name: Archive binary
         run: |
           cd build
-          ZIP_NAME=Gotodo-${{ matrix.os }}-${{ matrix.arch }}.zip
-          zip -j $ZIP_NAME Gotodo-${{ matrix.os }}-${{ matrix.arch }}*
+          EXT=""
+          if [[ "${{ matrix.os }}" == "windows" ]]; then EXT=".exe"; fi
+          FILENAME=Gotodo-${{ matrix.os }}-${{ matrix.arch }}${EXT}
+          zip ${{ runner.temp }}/Gotodo-${{ matrix.os }}-${{ matrix.arch }}.zip $FILENAME
         shell: bash
 
       - name: Upload artifact for release
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.os }}-${{ matrix.arch }}-binary
-          path: build/Gotodo-${{ matrix.os }}-${{ matrix.arch }}.zip
+          path: ${{ runner.temp }}/Gotodo-${{ matrix.os }}-${{ matrix.arch }}.zip
 
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # This permission is required to create a release
 
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v3
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
         with:
-          path: ./artifacts
+          path: ./artifacts # All artifacts will be downloaded into subdirectories here
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.zip
+          files: artifacts/*/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
