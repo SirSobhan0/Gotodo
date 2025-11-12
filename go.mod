@@ -1,4 +1,4 @@
-module Gotodo
+module github.com/SirSobhan0/Gotodo
 
 go 1.24.2
 
