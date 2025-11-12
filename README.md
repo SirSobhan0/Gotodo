@@ -30,8 +30,6 @@ Download from release?
 
 ### Star History
 
-## Star History
-
 <a href="https://www.star-history.com/#SirSobhan0/Gotodo&type=date&legend=bottom-right">
  <picture>
    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=SirSobhan0/Gotodo&type=date&theme=dark&legend=bottom-right" />
