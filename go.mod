@@ -1,4 +1,4 @@
-module todoV2
+module Gotodo
 
 go 1.24.2
 
