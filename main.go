@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -16,8 +17,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jalaali/go-jalaali"
 )
-
-const tasksFilename = "tasks.json"
 
 // English UI Strings
 const (
@@ -61,6 +60,13 @@ const (
 	calendarGregorian     = "Gregorian (MM/DD)"
 	calendarJalali        = "Jalali (MM/DD)"
 )
+
+var tasksFilename string
+
+func init() {
+	homeDir, _ := os.UserHomeDir()
+	tasksFilename = path.Join(homeDir, ".config", "gotodo.json")
+}
 
 type TaskStatus int
 
